@@ -86,16 +86,22 @@ def copy_updates():
     for path in [dest]+list(dest.rglob('*')):
         if not path.is_symlink():path.chmod(0o755 if path.is_dir() else 0o644)
 
-def fresh():
+def fresh(reset_requested=False):
     version=system();profile=budgets(effective_memory(),effective_cpus(),4)
-    if Path('/home/xui').exists():raise RuntimeError('Já existe /home/xui. Não será sobrescrito. Use --apply-updates em manutenção para aplicar somente as correções.')
+    if not reset_requested and Path('/home/xui').exists():raise RuntimeError('Já existe /home/xui. Não será sobrescrito. Use --apply-updates em manutenção para aplicar somente as correções.')
     if shutil.which('mysql'):
         if 'MariaDB' not in command(['mysql','--version']).stdout:raise RuntimeError('Já existe outro servidor MySQL. Instalação nova recusada para preservar os dados.')
         existing=sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys');").strip()
-        if existing:raise RuntimeError('Já existem bases de aplicação nesta máquina. Instalação nova recusada para preservar os dados.')
-    if version!='20.04' and Path('/etc/nginx/nginx.conf').exists():raise RuntimeError('Já existe Nginx nesta máquina. Instalação nova recusada para preservar o servidor existente.')
+        if existing and (not reset_requested or set(existing.splitlines()) - {'xui','xui_migrate'}):raise RuntimeError('Já existem bases de aplicação nesta máquina. Instalação nova recusada para preservar os dados.')
+    if version != '20.04' and Path('/etc/nginx/nginx.conf').exists():
+        compat_installed = Path('/etc/ld.so.conf.d/xui-compat.conf').is_file() or Path('/home/xui/config/ubuntu-compat.json').is_file()
+        if not reset_requested or not compat_installed or subprocess.run(['systemctl','is-active','--quiet','nginx.service']).returncode == 0:
+            raise RuntimeError('Nginx existente fora da instalação XUI parada. Verifique o serviço antes de reinstalar.')
     print('Instalando dependências. Perfil:',json.dumps(profile),flush=True)
     command(['apt-get','install','-y','--no-install-recommends']+__import__('ubuntu_compat').packages(PACKAGES,version),env=dict(os.environ,DEBIAN_FRONTEND='noninteractive'))
+    if reset_requested:
+        from reset_xui import reset
+        reset(command, sql)
     if sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ('xui','xui_migrate');").strip():raise RuntimeError('Já existe uma base XUI. Nenhuma base será apagada/reimportada.')
     if version!='20.04':command(['systemctl','disable','--now','nginx.service'])
     accounts();extract();copy_updates()
@@ -139,10 +145,14 @@ def fresh():
     print('Credenciais locais: /root/xui-install-credentials.txt (root, 0600).')
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--check',action='store_true');parser.add_argument('--apply-updates',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);mode=parser.add_mutually_exclusive_group();mode.add_argument('--check',action='store_true');mode.add_argument('--apply-updates',action='store_true');mode.add_argument('--zerar-xui',action='store_true');args=parser.parse_args()
     verify()
     if args.check:print('Pacote íntegro. Destino: Ubuntu 20.04 / 22.04 / 24.04 x86_64. Nenhuma alteração executada.');return
     if os.geteuid()!=0:raise RuntimeError('Execute sudo python3 install')
+    import fcntl
+    install_lock = Path('/run/xui-install.lock').open('a')
+    try: fcntl.flock(install_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: raise RuntimeError('Outra instalação do XUI está em andamento.')
     if args.apply_updates:
         system()
         if subprocess.run(['systemctl','is-active','--quiet','xuione.service']).returncode==0:raise RuntimeError('A primeira aplicação em instalação existente exige o XUI parado para manutenção. Nada foi reiniciado automaticamente.')
@@ -154,7 +164,7 @@ def main():
             command(['systemctl','stop','xui-mass-queue.service'])
         accounts();copy_updates();command(['python3','/home/xui/custom-updates/apply.py','--prepare']);command(['systemctl','daemon-reload']);command(['systemctl','enable','xui-mass-queue.service'])
         print('Correções aplicadas sem recriar banco, senha ou licença. Inicie xuione.service ao terminar a manutenção.');return
-    fresh()
+    fresh(args.zerar_xui)
 
 if __name__=='__main__':
     try:main()

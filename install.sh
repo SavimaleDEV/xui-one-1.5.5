@@ -2,8 +2,8 @@
 # Modelo de entrada PabloServers; pacote fixado: nosso XUI 1.5.5 completo.
 set -Eeuo pipefail
 XUI_REPOSITORY="${XUI_REPOSITORY:-SavimaleDEV/xui-one-1.5.5}"
-XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r4}"
-MANIFEST_SHA256='bc0fc60ecc3e3b1d9231ff29525ec1d669d09f1b22108900e420d7e5158c7d6e'
+XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r5}"
+MANIFEST_SHA256='c1999cbd1339abbbf7a1784c4b16e43a2f7a2135fb8f7bdd2eb106cebc4e8c3f'
 BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$BASE_DIR/instalador"
 TEMP_DIR=''
@@ -14,10 +14,11 @@ case "${1:-}" in
         printf '%s\n' 'XUI 1.5.5 + otimizações + Mass Edit' \
             'Ubuntu 20.04, 22.04 ou 24.04 x86_64 / systemd' \
             'sudo bash install.sh                  Instala tudo em servidor novo.' \
+            'sudo bash install.sh --zerar-xui       Reinstala do zero e recria os bancos do XUI.' \
             'bash install.sh --check                Confere sem instalar.' \
             'sudo bash install.sh --apply-updates   Correções no XUI existente/parado; preserva licença atual.'
         exit 0 ;;
-    --check|--apply-updates|'') ;;
+    --check|--zerar-xui|--apply-updates|'') ;;
     *) echo 'Opção inválida. Use bash install.sh --help' >&2; exit 2 ;;
 esac
 if [[ $# -gt 1 ]]; then echo 'Use apenas uma opção; consulte --help.' >&2; exit 2; fi
