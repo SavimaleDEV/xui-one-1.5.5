@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Native XUI 1.5.5 plus the packaged stability and Mass Edit corrections."""
+import argparse,hashlib,json,os,platform,secrets,shutil,subprocess,sys,tarfile
+from pathlib import Path
+BASE=Path(__file__).resolve().parent
+sys.path.insert(0,str(BASE/'updates'))
+from xui_resources import budgets,effective_memory,effective_cpus
+PACKAGES=['python3','sudo','iproute2','net-tools','procps','util-linux','ca-certificates','libcap2-bin','mariadb-server','mariadb-client','curl','wget','logrotate','cron','sysstat','libssl1.1','libxml2','libcurl4','libpng16-16','libjpeg8','libfreetype6','libxslt1.1','libbz2-1.0','libmcrypt4','libmaxminddb0','libssh2-1','libuuid1','libstdc++6','zlib1g','libonig5','alsa-utils','v4l-utils','certbot','iptables','openssl','xz-utils','zip','unzip']
+LINKS={'bin/php/bin/php':'php_7.4','bin/php/sbin/php-fpm':'php-fpm_7.4','reseller/assets':'/home/xui/admin/assets','includes/api/admin/table.php':'/home/xui/admin/table.php','includes/api/reseller/table.php':'/home/xui/reseller/table.php'}
+UNIT='''[Unit]
+Description=XUI.one Service
+After=network.target
+[Service]
+Type=simple
+User=root
+Restart=always
+RestartSec=5
+ExecStart=/bin/bash /home/xui/service start
+ExecStop=/bin/bash /home/xui/service stop
+[Install]
+WantedBy=multi-user.target
+'''
+def command(args,**kw):return subprocess.run(list(map(str,args)),check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kw)
+def sql(statement=None,source=None,database=None):
+    args=['mysql','--protocol=socket','-uroot','--batch','--skip-column-names']
+    if database:args.append(database)
+    if source:
+        with Path(source).open() as handle:return subprocess.run(args,stdin=handle,check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
+    return command(args,input=statement).stdout
+
+def verify():
+    for line in (BASE/'SHA256SUMS').read_text().splitlines():
+        expected,name=line.split('  ',1);path=Path(name)
+        if path.is_absolute() or '..' in path.parts:raise RuntimeError('Manifesto inválido')
+        hashed=hashlib.sha256()
+        with (BASE/path).open('rb') as source:
+            for block in iter(lambda:source.read(1048576),b''):hashed.update(block)
+        if hashed.hexdigest()!=expected:raise RuntimeError('Integridade inválida: '+name)
+
+def system():
+    from ubuntu_compat import release
+    if platform.machine()!='x86_64':raise RuntimeError('Este pacote requer arquitetura x86_64.')
+    return release()
+
+def private(path,text,owner=None):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    fd=os.open(str(path),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,'w') as output:output.write(text)
+    if owner:shutil.chown(path,user=owner,group='xui')
+
+def accounts():
+    if subprocess.run(['id','xui'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:
+        command(['adduser','--system','--no-create-home','--home','/home/xui','--shell','/usr/sbin/nologin','--group','xui'])
+    if subprocess.run(['id','xui-queue'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:
+        command(['useradd','--system','--no-create-home','--home-dir','/nonexistent','--shell','/usr/sbin/nologin','--gid','xui','xui-queue'])
+
+def extract():
+    root=Path('/home/xui')
+    with tarfile.open(BASE/'xui.tar.gz') as archive:
+        members=archive.getmembers()
+        for m in members:
+            path=Path(m.name)
+            if path.is_absolute() or '..' in path.parts:raise RuntimeError('Caminho inseguro no payload')
+            if m.issym():
+                if LINKS.get(str(path))!=m.linkname:raise RuntimeError('Link inesperado: '+m.name)
+            elif not (m.isfile() or m.isdir()):raise RuntimeError('Tipo inesperado: '+m.name)
+        root.mkdir()
+        for m in members:
+            if m.issym():continue
+            target=root/m.name
+            if m.isdir():target.mkdir(parents=True,exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True,exist_ok=True)
+                with archive.extractfile(m) as source,target.open('wb') as output:shutil.copyfileobj(source,output)
+                target.chmod(m.mode&0o777)
+        for m in members:
+            if m.issym():(root/m.name).symlink_to(m.linkname)
+    service=root/'service';text=service.read_text().replace('if [ $USER != "root" ]]; then','if [ "$USER" != "root" ]; then').replace('if [ $pids = 0 ]]; then','if [ "$pids" = 0 ]; then')
+    service.write_text(text);service.chmod(0o755)
+    command(['chown','-R','xui:xui',root])
+
+def copy_updates():
+    dest=Path('/home/xui/custom-updates')
+    if dest.exists() and not (dest/'apply.py').is_file():raise RuntimeError('Diretório de atualizações desconhecido')
+    shutil.copytree(BASE/'updates',dest,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+    for path in [dest]+list(dest.rglob('*')):
+        if not path.is_symlink():path.chmod(0o755 if path.is_dir() else 0o644)
+
+def fresh():
+    version=system();profile=budgets(effective_memory(),effective_cpus(),4)
+    if Path('/home/xui').exists():raise RuntimeError('Já existe /home/xui. Não será sobrescrito. Use --apply-updates em manutenção para aplicar somente as correções.')
+    if shutil.which('mysql'):
+        if 'MariaDB' not in command(['mysql','--version']).stdout:raise RuntimeError('Já existe outro servidor MySQL. Instalação nova recusada para preservar os dados.')
+        existing=sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys');").strip()
+        if existing:raise RuntimeError('Já existem bases de aplicação nesta máquina. Instalação nova recusada para preservar os dados.')
+    if version!='20.04' and Path('/etc/nginx/nginx.conf').exists():raise RuntimeError('Já existe Nginx nesta máquina. Instalação nova recusada para preservar o servidor existente.')
+    print('Instalando dependências. Perfil:',json.dumps(profile),flush=True)
+    command(['apt-get','update'])
+    command(['apt-get','install','-y','--no-install-recommends']+__import__('ubuntu_compat').packages(PACKAGES,version),env=dict(os.environ,DEBIAN_FRONTEND='noninteractive'))
+    if sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ('xui','xui_migrate');").strip():raise RuntimeError('Já existe uma base XUI. Nenhuma base será apagada/reimportada.')
+    if version!='20.04':command(['systemctl','disable','--now','nginx.service'])
+    accounts();extract();copy_updates()
+    from ubuntu_compat import prepare as prepare_compat
+    prepare_compat(version,BASE/'components')
+    from importlib.machinery import SourceFileLoader
+    vendor=SourceFileLoader('xui_vendor',str(BASE/'install.vendor')).load_module()
+    user='xui_'+secrets.token_hex(10);password=secrets.token_hex(24);redis_password=secrets.token_hex(24)
+    private('/home/xui/config/config.ini',vendor.rConfig%(user,password),owner='xui')
+    private('/home/xui/bin/redis/redis.conf',vendor.rRedisConfig.replace('#PASSWORD#',redis_password),owner='xui')
+    code=secrets.token_hex(8);codes=Path('/home/xui/bin/nginx/conf/codes')
+    for old in codes.glob('*.conf'):old.unlink()  # Extracted payload defaults; no old host installation.
+    template=(codes/'template').read_text()
+    for key,value in {'#WHITELIST#':'','#TYPE#':'admin','#CODE#':code,'#BURST#':'500'}.items():template=template.replace(key,value)
+    (codes/(code+'.conf')).write_text(template);shutil.chown(codes/(code+'.conf'),user='xui',group='xui')
+    Path('/etc/systemd/system/xuione.service').write_text(UNIT)
+    command(['python3','/home/xui/custom-updates/apply.py','--prepare','--fresh'])
+    command(['systemctl','daemon-reload']);command(['systemctl','restart','mariadb.service'])
+    sql('CREATE DATABASE xui; CREATE DATABASE xui_migrate;')
+    sql(source='/home/xui/bin/install/database.sql',database='xui')
+    statement=''
+    for host in ['localhost','127.0.0.1']:
+        statement+="CREATE USER '{u}'@'{h}' IDENTIFIED BY '{p}'; GRANT ALL PRIVILEGES ON xui.* TO '{u}'@'{h}' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON xui_migrate.* TO '{u}'@'{h}'; GRANT ALL PRIVILEGES ON mysql.* TO '{u}'@'{h}';".format(u=user,h=host,p=password)
+    sql(statement)
+    sql("USE xui; UPDATE settings SET redis_password='{r}' WHERE id=1; INSERT INTO access_codes(code,type,enabled,`groups`) VALUES('{c}',0,1,'[1]');".format(r=redis_password,c=code))
+    fstab=Path('/etc/fstab');text=fstab.read_text()
+    if '/home/xui/content/streams' not in text:text+='\n# XUI bounded runtime mounts\ntmpfs /home/xui/content/streams tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size={}M 0 0\n'.format(max(256,profile['xui_mb']//3))
+    if '/home/xui/tmp ' not in text:text+='tmpfs /home/xui/tmp tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size={}M 0 0\n'.format(min(6144,max(128,profile['xui_mb']//16)))
+    fstab.write_text(text)
+    for name in ['content/streams','tmp']:
+        path=Path('/home/xui')/name;path.mkdir(parents=True,exist_ok=True)
+        saved=Path('/var/backups')/('xui-initial-'+name.replace('/','-'));shutil.copytree(path,saved,dirs_exist_ok=True);saved.chmod(0o700)
+        command(['mount',path]);shutil.copytree(saved,path,dirs_exist_ok=True);command(['chown','-R','xui:xui',path])
+    command(['sysctl','-p','/etc/sysctl.d/99-xui-stability.conf'])
+    command(['systemctl','enable','xuione.service','xui-mass-queue.service'])
+    private('/root/xui-install-credentials.txt','MySQL username: '+user+'\nMySQL password: '+password+'\n')
+    command(['systemctl','start','xuione.service'])  # Corrections are already applied; starts only once.
+    command(['/home/xui/bin/php/bin/php','/home/xui/status','1'])
+    Path('/home/xui/custom-updates/installed.json').write_text(json.dumps({'version':2,'profile':profile,'admin_code':code}))
+    print('Instalado com as correções e Mass Edit em fila. Acesse http://IP_DA_MAQUINA/'+code)
+    print('Credenciais locais: /root/xui-install-credentials.txt (root, 0600).')
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--check',action='store_true');parser.add_argument('--apply-updates',action='store_true');args=parser.parse_args()
+    verify()
+    if args.check:print('Pacote íntegro. Destino: Ubuntu 20.04 / 22.04 / 24.04 x86_64. Nenhuma alteração executada.');return
+    if os.geteuid()!=0:raise RuntimeError('Execute sudo python3 install')
+    if args.apply_updates:
+        system()
+        if subprocess.run(['systemctl','is-active','--quiet','xuione.service']).returncode==0:raise RuntimeError('A primeira aplicação em instalação existente exige o XUI parado para manutenção. Nada foi reiniciado automaticamente.')
+        if not Path('/home/xui/admin/post.php').is_file():raise RuntimeError('Instalação XUI existente não encontrada.')
+        for state in ['/var/lib/xui-mass-queue','/home/xui/tmp/xui-mass-queue']:
+            if (Path(state)/'lease.json').exists():raise RuntimeError('Há lote reservado na fila. Conclua/cancele antes da atualização em manutenção.')
+        if not shutil.which('setcap'):raise RuntimeError('Instale libcap2-bin antes de aplicar as correções nesta instalação existente.')
+        if subprocess.run(['systemctl','is-active','--quiet','xui-mass-queue.service']).returncode==0:
+            command(['systemctl','stop','xui-mass-queue.service'])
+        accounts();copy_updates();command(['python3','/home/xui/custom-updates/apply.py','--prepare']);command(['systemctl','daemon-reload']);command(['systemctl','enable','xui-mass-queue.service'])
+        print('Correções aplicadas sem recriar banco, senha ou licença. Inicie xuione.service ao terminar a manutenção.');return
+    fresh()
+
+if __name__=='__main__':
+    try:main()
+    except subprocess.CalledProcessError as e:raise SystemExit('ERRO: falha em '+str(e.cmd[0])+'. Instalação interrompida; não foi anunciada como concluída.')
+    except (OSError,ValueError,RuntimeError) as e:raise SystemExit('ERRO: '+str(e))

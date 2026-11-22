@@ -1,0 +1,8 @@
+[Unit]
+Description=Lightweight MariaDB recovery check every 30 seconds
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=30s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Recover MariaDB after persistent database/XUI connection failures
+ConditionPathExists=!/run/xui-mariadb-watchdog.pause
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xui-mariadb-watchdog
+TimeoutStartSec=20
+Nice=10
+UMask=0077

@@ -1,0 +1,22 @@
+/home/xui/bin/nginx/logs/source_guard.log /home/xui/bin/redis/redis-server.log /home/xui/bin/nginx/logs/error.log /home/xui/bin/php/var/log/php-fpm.log {
+    su xui xui
+    daily
+    maxsize 20M
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+/var/log/xui-health.log {
+    su root root
+    daily
+    maxsize 20M
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 640 root root
+}

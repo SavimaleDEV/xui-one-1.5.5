@@ -1,0 +1,5 @@
+*.zip
+*.tar.gz
+__pycache__/
+instalador/install.vendor
+instalador/database.sql

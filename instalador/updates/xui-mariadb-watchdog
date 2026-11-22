@@ -1,0 +1,164 @@
+#!/usr/bin/python3
+"""Lightweight MariaDB recovery; no credentials or SQL payloads are logged."""
+import configparser,fcntl,json,os,re,socket,subprocess,sys,time
+from pathlib import Path
+
+STATE=Path('/run/xui-mariadb-watchdog.json')
+PAUSE=Path('/run/xui-mariadb-watchdog.pause')
+COOLDOWN=300
+THRESHOLD=3
+
+def decide(state,active,problem,now,paused=False):
+    result=dict(state)
+    if paused or active in ('activating','deactivating','reloading'):
+        result['failures']=0
+        return None,result
+    if active not in ('active','inactive','failed') or problem=='diagnostic_configuration':
+        result['failures']=0
+        return None,result
+    if active=='active' and not problem:
+        result['failures']=0
+        return None,result
+    result['failures']=int(result.get('failures',0))+1
+    stopped=active in ('inactive','failed')
+    if not stopped and result['failures']<THRESHOLD:
+        return None,result
+    if now-float(result.get('last_restart',0))<COOLDOWN:
+        return None,result
+    result['last_restart']=now
+    result['failures']=0
+    return 'restart',result
+
+def load_state():
+    try:return json.loads(STATE.read_text())
+    except (OSError,ValueError):return {}
+
+def save_state(state):
+    temp=STATE.with_suffix('.tmp')
+    temp.write_text(json.dumps(state));temp.chmod(0o600);temp.replace(STATE)
+
+def clean(value):return value.strip().strip(chr(34)).strip(chr(39))
+
+def connection_error(message):
+    lower=message.lower()
+    signals=('too many connections','max_user_connections','server has gone away','lost connection','connection refused','cannot connect','can\'t connect','connection timed out')
+    return any(term in lower for term in signals)
+
+def local_hosts():
+    hosts={'localhost','127.0.0.1','::1',socket.gethostname()}
+    try:
+        result=subprocess.run(['ip','-j','address','show'],capture_output=True,text=True,timeout=3,check=True)
+        for interface in json.loads(result.stdout):
+            for address in interface.get('addr_info',[]):
+                if address.get('local'):hosts.add(address['local'])
+    except (OSError,ValueError,subprocess.SubprocessError):pass
+    return hosts
+
+def local_database():
+    cfg=configparser.ConfigParser(interpolation=None)
+    try:
+        cfg.read('/home/xui/config/config.ini')
+        return clean(cfg['XUI']['hostname']) in local_hosts()
+    except (OSError,KeyError,ValueError):return False
+
+def probe(state,now):
+    config=configparser.ConfigParser(interpolation=None)
+    try:
+        config.read('/home/xui/config/config.ini')
+        host=clean(config['XUI']['hostname']);port=int(clean(config['XUI'].get('port','3306')))
+        database=clean(config['XUI']['database']);server_id=int(clean(config['XUI']['server_id']))
+        if not re.fullmatch('[A-Za-z0-9_]+',database):raise ValueError()
+        if host not in local_hosts():raise ValueError()
+    except Exception:
+        return 'diagnostic_configuration',state,'cannot validate local XUI database settings'
+    tcp_ok=True
+    try:
+        with socket.create_connection((host,port),timeout=2):pass
+    except OSError:tcp_ok=False
+    sql="SELECT 'watchdog_ok'; SELECT JSON_OBJECT('id',id,'type',type,'message',LEFT(log_message,1024),'server_id',server_id,'date',date) FROM `"+database+"`.panel_logs ORDER BY id DESC LIMIT 50;"
+    try:
+        result=subprocess.run(['mysql','--connect-timeout=2','--batch','--raw','--skip-column-names','-e',sql],capture_output=True,text=True,timeout=4)
+    except subprocess.TimeoutExpired:
+        return 'database_query_timeout',state,'database query exceeded 4 seconds'
+    lines=result.stdout.splitlines()
+    if not lines or lines[0]!='watchdog_ok':
+        if re.search('ERROR (1044|1045|1049|1698)',result.stderr):
+            return 'diagnostic_configuration',state,'health-query authentication/configuration failed; no restart for this error'
+        return 'database_query_failed',state,'database health query failed'
+    rows=[]
+    for line in lines[1:]:
+        try:rows.append(json.loads(line))
+        except ValueError:pass
+    previous=int(state.get('last_log_id',0))
+    latest=max([int(row.get('id',0)) for row in rows]+[previous])
+    state=dict(state);state['last_log_id']=latest
+    # Establish a baseline on install; never act on old XUI errors.
+    initialized=bool(state.get('initialized',False));state['initialized']=True
+    errors=[]
+    if initialized:
+        for row in rows:
+            if int(row.get('id',0))<=previous:continue
+            if int(row.get('server_id') or 0)!=server_id:continue
+            if str(row.get('type','')).lower()!='pdo':continue
+            if not 0<=now-int(row.get('date') or 0)<=120:continue
+            if connection_error(str(row.get('message',''))):errors.append(int(row['id']))
+    if not tcp_ok:return 'xui_tcp_unavailable',state,'configured XUI database TCP endpoint did not respond'
+    if errors:return 'xui_connection_errors',state,'new local XUI database connection errors'
+    return None,state,'healthy'
+
+def self_test():
+    now=1000
+    assert decide({},'active',None,now)[0] is None
+    assert decide({},'inactive','stopped',now)[0]=='restart'
+    assert decide({},'failed','stopped',now)[0]=='restart'
+    for problem in ('database_query_timeout','database_query_failed','xui_tcp_unavailable','xui_connection_errors'):
+        state={}
+        for i in range(3):
+            action,state=decide(state,'active',problem,now+i*30)
+            assert action==('restart' if i==2 else None),(problem,i)
+    state={}
+    _,state=decide(state,'active','xui_connection_errors',now)
+    _,state=decide(state,'active',None,now+30)
+    action,state=decide(state,'active','xui_connection_errors',now+60)
+    assert action is None and state['failures']==1
+    for active in ('activating','deactivating','reloading'):
+        assert decide({'failures':3},active,'database_query_failed',now)[0] is None
+    assert decide({'failures':3},'active','diagnostic_configuration',now)[0] is None
+    assert decide({'failures':3},'failed','stopped',now,paused=True)[0] is None
+    assert decide({'last_restart':990},'failed','stopped',now)[0] is None
+    assert decide({'last_restart':600},'failed','stopped',now)[0]=='restart'
+    assert connection_error('SQLSTATE[HY000] [1040] Too many connections')
+    assert connection_error('SQLSTATE[HY000] [2006] MySQL server has gone away')
+    assert not connection_error('SQLSTATE[28000] [1045] Access denied for user')
+    assert not connection_error('SQLSTATE[42S02] [1146] Table does not exist')
+    print('Self-tests passed: healthy, stopped, persistent failures, transient recovery, maintenance, cooldown and error filtering.')
+
+def main():
+    if '--self-test' in sys.argv:self_test();return
+    if os.geteuid()!=0:raise SystemExit('Run as root')
+    os.umask(0o077)
+    with open('/run/xui-mariadb-watchdog.lock','w') as lock:
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return
+        if PAUSE.exists():return
+        if not local_database():
+            print('Database is not local or cannot be validated; recovery skipped.',file=sys.stderr);return
+        result=subprocess.run(['systemctl','show','mariadb.service','--property=ActiveState','--value'],capture_output=True,text=True,timeout=3)
+        if result.returncode:
+            print('Cannot inspect MariaDB service; recovery skipped.',file=sys.stderr);return
+        active=result.stdout.strip()
+        if active in ('activating','deactivating','reloading'):return
+        now=time.time();state=load_state();previous_failures=int(state.get('failures',0))
+        if active=='active':problem,state,detail=probe(state,now)
+        else:problem,detail='service_stopped','MariaDB service '+active
+        action,state=decide(state,active,problem,now)
+        save_state(state)
+        if action=='restart':
+            print('MariaDB watchdog: requesting systemctl restart mariadb; reason='+str(problem),flush=True)
+            subprocess.run(['systemctl','reset-failed','mariadb.service'],capture_output=True,text=True,timeout=3,check=True)
+            subprocess.run(['systemctl','restart','--no-block','mariadb.service'],capture_output=True,text=True,timeout=3,check=True)
+        elif problem:
+            print('MariaDB watchdog: '+detail+'; consecutive_failures='+str(state.get('failures',0))+'; cooldown_seconds=300',flush=True)
+        elif previous_failures:
+            print('MariaDB watchdog: database recovered; failure count reset.',flush=True)
+if __name__=='__main__':main()

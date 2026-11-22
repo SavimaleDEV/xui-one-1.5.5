@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+"""Read-only XUI health sampling. Never restarts services or changes app data."""
+import datetime,json,os,re,shlex,socket,struct,subprocess,sys
+from pathlib import Path
+
+profile=json.loads(Path('/etc/xui-stability/profile.json').read_text())
+sample={'time':datetime.datetime.now(datetime.timezone.utc).isoformat(),'load':os.getloadavg()}
+warnings=[]
+mem={k:int(v.split()[0])*1024 for k,v in (l.split(':',1) for l in Path('/proc/meminfo').read_text().splitlines()) if v.strip().endswith('kB')}
+sample['memory_available_mib']=mem['MemAvailable']//1048576
+sample['swap_used_mib']=(mem['SwapTotal']-mem['SwapFree'])//1048576
+if mem['MemAvailable']<min(8192,profile['os_reserve_mb'])*1048576:warnings.append('RAM available below installation reserve threshold')
+for unit,budget in [('xuione.service',profile['xui_mb']),('mariadb.service',profile['mysql_mb'])]:
+    try:
+        group=subprocess.run(['systemctl','show',unit,'--property=ControlGroup','--value'],capture_output=True,text=True,timeout=3,check=True).stdout.strip()
+        if not group.startswith('/') or '..' in group:raise ValueError('invalid cgroup')
+        cg=Path('/sys/fs/cgroup')/group.lstrip('/')
+        if (cg/'memory.current').exists():
+            usage=int((cg/'memory.current').read_text())
+            events=dict(line.split() for line in (cg/'memory.events').read_text().splitlines())
+            failures=int(events.get('oom',0))
+        else:
+            cg=Path('/sys/fs/cgroup/memory')/group.lstrip('/')
+            usage=int((cg/'memory.usage_in_bytes').read_text());failures=int((cg/'memory.failcnt').read_text())
+        sample[unit]={'memory_mib':usage//1048576,'allocation_failures':failures}
+        if usage>budget*.8*1048576:warnings.append(unit+' approaching memory budget')
+    except (OSError,ValueError,subprocess.SubprocessError):warnings.append(unit+' memory accounting unavailable')
+
+try:
+    r=subprocess.run(['mysql','--connect-timeout=3','-NBe','SELECT 1; SHOW GLOBAL STATUS WHERE Variable_name IN ("Threads_connected","Threads_running","Max_used_connections","Created_tmp_tables","Created_tmp_disk_tables");'],capture_output=True,text=True,timeout=5,check=True)
+    sample['mysql']={k:int(v) for k,v in (l.split('\t',1) for l in r.stdout.splitlines()[1:])}
+    if sample['mysql'].get('Threads_connected',0)>int(profile['mysql_connections']*.8):warnings.append('database connections above profile threshold')
+except Exception:warnings.append('database health query failed')
+try:
+    conf={}
+    for line in Path('/home/xui/bin/redis/redis.conf').read_text().splitlines():
+        a=shlex.split(line,comments=True)
+        if len(a)>1:conf[a[0]]=a[1:]
+    s=socket.create_connection(('127.0.0.1',int(conf.get('port',['6379'])[0])),timeout=3)
+    f=s.makefile('rb')
+    def command(*args):
+        args=[str(a).encode() for a in args]
+        s.sendall(b'*'+str(len(args)).encode()+b'\r\n'+b''.join(b'$'+str(len(a)).encode()+b'\r\n'+a+b'\r\n' for a in args))
+        header=f.readline();value=header[1:-2]
+        if header[:1]==b'+':return value.decode()
+        if header[:1]!=b'$':raise RuntimeError('Redis diagnostic command failed')
+        data=f.read(int(value));f.read(2);return data.decode()
+    if conf.get('requirepass'):command('AUTH',conf['requirepass'][0])
+    info=dict(l.split(':',1) for l in command('INFO').splitlines() if ':' in l and not l.startswith('#'))
+    keys=['used_memory','maxmemory','connected_clients','blocked_clients','rejected_connections','evicted_keys','rdb_last_bgsave_status']
+    sample['redis']={k:info[k] for k in keys if k in info}
+    if int(info.get('used_memory',0))>profile['redis_mb']*.75*1048576:warnings.append('Redis memory above profile threshold')
+    if info.get('rdb_last_bgsave_status','ok')!='ok':warnings.append('Redis background save failed')
+    s.close()
+except Exception:warnings.append('Redis health query failed')
+try:
+    r=subprocess.run(['curl','-fsS','--max-time','4','http://127.0.0.1:'+str(profile['http_port'])+'/status'],capture_output=True,text=True,timeout=5,check=True)
+    status=dict(l.split(':',1) for l in r.stdout.splitlines() if ':' in l)
+    sample['php_sample']={k:int(status[k]) for k in ['listen queue','total processes','max children reached']}
+    if sample['php_sample']['listen queue']>10:warnings.append('sampled PHP pool queue above 10')
+except Exception:warnings.append('PHP status check failed')
+try:
+    guard_main=Path('/home/xui/bin/nginx/conf/nginx.conf').read_text()
+    guard_custom=Path('/home/xui/bin/nginx/conf/custom.conf').read_text()
+    configured=('include source_guard_http.conf;' in guard_main and 'include source_guard_server.conf;' in guard_custom and Path('/home/xui/bin/nginx/conf/source_guard_rules.conf').exists())
+    guard_log=Path('/home/xui/bin/nginx/logs/source_guard.log')
+    sample['source_guard']={'configured':configured,'rejection_log_bytes':guard_log.stat().st_size if guard_log.exists() else 0}
+    if not configured:warnings.append('channel-open protection missing from nginx configuration')
+except Exception:warnings.append('channel-open protection status unavailable')
+try:
+    snmp=Path('/proc/net/snmp').read_text().splitlines()
+    counters={}
+    for index in range(0,len(snmp)-1,2):
+        keys=snmp[index].split();values=snmp[index+1].split()
+        if keys[0]=='Tcp:':counters={k:int(v) for k,v in zip(keys[1:],values[1:])}
+    current={'out_segments':counters['OutSegs'],'retransmitted_segments':counters['RetransSegs']}
+    state_path=Path('/run/xui-healthcheck-network.json')
+    previous={}
+    try:previous=json.loads(state_path.read_text())
+    except (OSError,ValueError):pass
+    sample['tcp']=dict(current)
+    delta_out=current['out_segments']-previous.get('out_segments',current['out_segments'])
+    delta_retrans=current['retransmitted_segments']-previous.get('retransmitted_segments',current['retransmitted_segments'])
+    if delta_out>0 and delta_retrans>=0:
+        ratio=100*delta_retrans/delta_out
+        sample['tcp']['interval_retransmission_percent']=round(ratio,4)
+        sample['tcp']['interval_out_segments']=delta_out
+        if delta_out>1000 and ratio>2:warnings.append('TCP retransmissions above 2 percent in sampling interval; inspect network paths')
+    temp_path=state_path.with_suffix('.tmp')
+    temp_path.write_text(json.dumps(current));temp_path.chmod(0o600);temp_path.replace(state_path)
+except Exception:warnings.append('TCP network metrics unavailable')
+sample['warnings']=warnings
+print(json.dumps(sample,sort_keys=True),flush=True)
+if warnings:print('XUI health warning: '+'; '.join(warnings),file=sys.stderr)

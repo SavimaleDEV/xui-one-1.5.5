@@ -1,0 +1,11 @@
+[Unit]
+Description=Read-only XUI resource and service health sample
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xui-healthcheck
+TimeoutStartSec=25
+Nice=10
+UMask=0027
+StandardOutput=append:/var/log/xui-health.log
+StandardError=journal

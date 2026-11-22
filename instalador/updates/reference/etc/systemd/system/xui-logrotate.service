@@ -1,0 +1,7 @@
+[Unit]
+Description=Check XUI and database log size limits
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate /etc/logrotate.d/mysql-server /etc/logrotate.d/xui-runtime
+TimeoutStartSec=120
+Nice=10

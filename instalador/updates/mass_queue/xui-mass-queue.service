@@ -1,0 +1,24 @@
+[Unit]
+Description=XUI controlled mass edit dispatcher
+After=network.target xuione.service
+
+[Service]
+Type=simple
+User=xui
+Group=xui
+UMask=0077
+ExecStart=/usr/bin/python3 -u /home/xui/custom-mass-queue/proxy.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/xui/tmp/xui-mass-queue
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

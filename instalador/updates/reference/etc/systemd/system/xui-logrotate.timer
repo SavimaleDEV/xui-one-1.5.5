@@ -1,0 +1,8 @@
+[Unit]
+Description=Check XUI log rotation every fifteen minutes
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=30s
+[Install]
+WantedBy=timers.target
