@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Modelo de entrada PabloServers; pacote fixado: nosso XUI 1.5.5 completo.
 set -Eeuo pipefail
-XUI_REPOSITORY="${XUI_REPOSITORY:-SavimaleDEV/xui-one-atualizado}"
+XUI_REPOSITORY="${XUI_REPOSITORY:-SavimaleDEV/xui-one-1.5.5}"
 XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122}"
 MANIFEST_SHA256='034157381d6c9537c506ad65d599b18bae51c3b4f93f971f418ad4aa38063d58'
 BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
