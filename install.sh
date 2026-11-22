@@ -36,7 +36,7 @@ if [[ "${1:-}" != --check ]]; then
     fi
 fi
 command -v python3 >/dev/null || { echo 'A verificação requer Python 3.' >&2; exit 1; }
-if [[ ! -f "$INSTALL_DIR/install" ]]; then
+if [[ ! -f "$INSTALL_DIR/xui.tar.gz" ]]; then
     TEMP_DIR="$(mktemp -d -t xui-1.5.5-XXXXXXXX)"
     PACKAGE_URL="${XUI_PACKAGE_URL:-https://github.com/$XUI_REPOSITORY/releases/download/$XUI_RELEASE_TAG/XUI_1.5.5_COMPLETO.zip}"
     [[ "$PACKAGE_URL" == https://* ]] || { echo 'O download requer HTTPS.' >&2; exit 1; }
