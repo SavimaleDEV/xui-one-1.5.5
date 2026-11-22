@@ -2,8 +2,8 @@
 # Modelo de entrada PabloServers; pacote fixado: nosso XUI 1.5.5 completo.
 set -Eeuo pipefail
 XUI_REPOSITORY="${XUI_REPOSITORY:-SavimaleDEV/xui-one-1.5.5}"
-XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r3}"
-MANIFEST_SHA256='e48eef14114417a207d9b20dc9fc0b784ad6d45c6395bc510d436529d5ba0fe1'
+XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r4}"
+MANIFEST_SHA256='bc0fc60ecc3e3b1d9231ff29525ec1d669d09f1b22108900e420d7e5158c7d6e'
 BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$BASE_DIR/instalador"
 TEMP_DIR=''
@@ -31,7 +31,6 @@ if [[ "${1:-}" != --check ]]; then
         exit 1
     fi
     if ! command -v python3 >/dev/null; then
-        apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 ca-certificates curl
     fi
 fi
