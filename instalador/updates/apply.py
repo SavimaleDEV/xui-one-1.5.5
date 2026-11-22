@@ -153,6 +153,7 @@ def queue_assets(files, profile):
     files.write('/home/xui/admin/assets/js/listings.js', script)
     unit = (source / 'xui-mass-queue.service').read_text().replace('After=network.target xuione.service', 'After=network.target\nBefore=xuione.service')
     unit = unit.replace('User=xui\n', 'User=xui-queue\n').replace('UMask=0077', 'UMask=0007').replace('Restart=on-failure', 'Restart=always')
+    unit = re.sub(r'(?m)^MemoryMax=.*$', 'MemoryMax={}M'.format(profile['proxy_mb']), unit)
     unit = unit.replace('ReadWritePaths=/home/xui/tmp/xui-mass-queue', 'StateDirectory=xui-mass-queue\nStateDirectoryMode=0770\nReadWritePaths=' + state)
     files.write('/etc/systemd/system/xui-mass-queue.service', unit)
     for name in ['', 'jobs', 'owners', 'dispatch']:

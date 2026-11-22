@@ -6,13 +6,13 @@ from xui_resources import budgets
 
 class InstallerTests(unittest.TestCase):
  def test_budgets_fit_small_and_large_machines(self):
-  for ram in [4096,8192,16384,32768,65536,128000,262144]:
+  for ram in [64,256,512,1024,2048,3072,4095,4096,8192,16384,32768,65536,128000,262144]:
    for pools in [1,4,6,12]:
     p=budgets(ram,2,pools)
     self.assertLessEqual(p['xui_mb']+p['mysql_mb']+p['os_reserve_mb']+p['proxy_mb'],ram)
     self.assertLess(p['redis_mb'],p['xui_mb']);self.assertLessEqual(p['php_children'],48)
     self.assertGreaterEqual(p['php_children'],1);self.assertLessEqual(p['mysql_connections'],1024)
-  with self.assertRaises(ValueError):budgets(2048,1,4)
+  with self.assertRaises(ValueError):budgets(0,1,4)
 
  def test_stage_is_idempotent_and_keeps_credentials_and_native_php(self):
   with tempfile.TemporaryDirectory() as directory:
@@ -31,7 +31,7 @@ class InstallerTests(unittest.TestCase):
    for name,text in {'etc/mysql/my.cnf':'# custom\n[mysqld]\nmax_connections=8192\n','etc/logrotate.d/mysql-server':'/var/log/mysql/mysql.log {\n daily\n rotate 7\n}\n','home/xui/bin/redis/redis.conf':'bind 127.0.0.1\nrequirepass KEEP_THIS_SECRET\nmaxmemory-policy noeviction\n','home/xui/config/config.ini':'[XUI]\nhostname="127.0.0.1"\ndatabase="xui"\nserver_id=1\n[Encrypted]\nusername="PRESERVE"\npassword="PRESERVE"\n'}.items():
     p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
    native=hashlib.sha256((root/'home/xui/admin/post.php').read_bytes()).hexdigest()
-   args=[sys.executable,str(ROOT/'updates/apply.py'),'--root',str(root),'--stage','--memory-mb','8192','--cpus','2']
+   args=[sys.executable,str(ROOT/'updates/apply.py'),'--root',str(root),'--stage','--memory-mb','1024','--cpus','2']
    a=subprocess.run(args+['--fresh'],capture_output=True,text=True);self.assertEqual(a.returncode,0,a.stderr)
    snapshot={str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file() and '/var/backups/' not in str(p)}
    b=subprocess.run(args,capture_output=True,text=True);self.assertEqual(b.returncode,0,b.stderr)
@@ -46,7 +46,8 @@ class InstallerTests(unittest.TestCase):
    self.assertIn('ExecStartPre=',(root/'etc/systemd/system/xuione.service.d/90-xui-stability.conf').read_text())
    self.assertIn('admin:stream_mass',(codes/'template').read_text())
    self.assertIn('/home/xui/#TYPE#/post.php',(codes/'template').read_text())
-   profile=json.loads((root/'etc/xui-stability/profile.json').read_text());self.assertEqual(profile['memory_mb'],8192)
+   profile=json.loads((root/'etc/xui-stability/profile.json').read_text());self.assertEqual(profile['memory_mb'],1024)
+   self.assertIn('MemoryMax={}M'.format(profile['proxy_mb']),q)
    # Native-generated future aliases remain valid and are not given duplicate handlers.
    future=(codes/'template').read_text()
    for k,v in {'#CODE#':'future','#TYPE#':'admin','#WHITELIST#':'','#BURST#':'500'}.items():future=future.replace(k,v)

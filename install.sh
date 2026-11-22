@@ -2,8 +2,8 @@
 # Modelo de entrada PabloServers; pacote fixado: nosso XUI 1.5.5 completo.
 set -Eeuo pipefail
 XUI_REPOSITORY="${XUI_REPOSITORY:-SavimaleDEV/xui-one-1.5.5}"
-XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r2}"
-MANIFEST_SHA256='d16d06df509119297d3c6417a6f32afa150011b4cc02ddb5d24afa098d89b8ef'
+XUI_RELEASE_TAG="${XUI_RELEASE_TAG:-v1.5.5-update-20261122-r3}"
+MANIFEST_SHA256='e48eef14114417a207d9b20dc9fc0b784ad6d45c6395bc510d436529d5ba0fe1'
 BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$BASE_DIR/instalador"
 TEMP_DIR=''
@@ -12,7 +12,7 @@ trap cleanup EXIT
 case "${1:-}" in
     -h|--help)
         printf '%s\n' 'XUI 1.5.5 + otimizações + Mass Edit' \
-            'Ubuntu 20.04, 22.04 ou 24.04 x86_64 / systemd / mínimo 4 GiB RAM' \
+            'Ubuntu 20.04, 22.04 ou 24.04 x86_64 / systemd' \
             'sudo bash install.sh                  Instala tudo em servidor novo.' \
             'bash install.sh --check                Confere sem instalar.' \
             'sudo bash install.sh --apply-updates   Correções no XUI existente/parado; preserva licença atual.'
