@@ -4,10 +4,10 @@ Instalador para servidor dedicado novo com Ubuntu 20.04, 22.04 ou 24.04 x86_64, 
 
 ## Instalação nova
 
-Execute os comandos no servidor de destino. O primeiro baixa o instalador da versão fixada. A opção `--check` confere o pacote, e a última linha inicia a instalação e imprime o endereço administrativo ao concluir.
+Execute os comandos no servidor de destino. Na instalação nova, o instalador executa `apt-get update` e `apt-get dist-upgrade` antes de instalar as dependências do painel. Se a resolução exigir remover pacotes, o APT interrompe a operação. Se o Ubuntu solicitar reinicialização, o instalador avisa para que você a programe. O primeiro baixa o instalador da versão fixada. A opção `--check` confere o pacote, e a última linha inicia a instalação e imprime o endereço administrativo ao concluir.
 
 ```bash
-curl -fL https://raw.githubusercontent.com/SavimaleDEV/xui-one-1.5.5/v1.5.5-update-20261122/install.sh -o install-xui-1.5.5.sh &&
+curl -fL https://raw.githubusercontent.com/SavimaleDEV/xui-one-1.5.5/v1.5.5-update-20261122-r2/install.sh -o install-xui-1.5.5.sh &&
 bash install-xui-1.5.5.sh --check &&
 sudo bash install-xui-1.5.5.sh
 ```

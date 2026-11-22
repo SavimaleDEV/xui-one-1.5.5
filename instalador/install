@@ -95,7 +95,12 @@ def fresh():
         if existing:raise RuntimeError('Já existem bases de aplicação nesta máquina. Instalação nova recusada para preservar os dados.')
     if version!='20.04' and Path('/etc/nginx/nginx.conf').exists():raise RuntimeError('Já existe Nginx nesta máquina. Instalação nova recusada para preservar o servidor existente.')
     print('Instalando dependências. Perfil:',json.dumps(profile),flush=True)
+    print('Atualizando índices e pacotes do Ubuntu antes de instalar o XUI.', flush=True)
+    apt_env = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
     command(['apt-get','update'])
+    command(['apt-get','-y','--no-remove','-o','Dpkg::Options::=--force-confold','dist-upgrade'], env=apt_env)
+    if Path('/var/run/reboot-required').exists():
+        print('O Ubuntu solicitou reinicialização. Programe-a após a instalação.', flush=True)
     command(['apt-get','install','-y','--no-install-recommends']+__import__('ubuntu_compat').packages(PACKAGES,version),env=dict(os.environ,DEBIAN_FRONTEND='noninteractive'))
     if sql("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ('xui','xui_migrate');").strip():raise RuntimeError('Já existe uma base XUI. Nenhuma base será apagada/reimportada.')
     if version!='20.04':command(['systemctl','disable','--now','nginx.service'])
